@@ -54,6 +54,7 @@ extern "C" {
 
 using std::abs;
 using std::make_pair;
+using std::make_shared;
 using std::max;
 using std::min;
 using std::out_of_range;
@@ -90,7 +91,6 @@ DecodeTrace::DecodeTrace(pv::Session &session,
 	Trace(signalbase),
 	session_(session),
 	row_height_(0),
-	max_visible_rows_(0),
 	delete_mapper_(this),
 	show_hide_mapper_(this)
 {
@@ -146,7 +146,7 @@ pair<int, int> DecodeTrace::v_extents() const
 	const int row_height = (ViewItemPaintParams::text_height() * 6) / 4;
 
 	// Make an empty decode trace appear symmetrical
-	const int row_count = max(1, max_visible_rows_);
+	const int row_count = max(1, (int)(rows_.size()));
 
 	return make_pair(-row_height, row_height * row_count);
 }
@@ -161,12 +161,11 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 {
 	const int text_height = ViewItemPaintParams::text_height();
 	row_height_ = (text_height * 6) / 4;
-	const int annotation_height = (text_height * 5) / 4;
+	ann_height_ = (text_height * 5) / 4;
 
 	const QString err = decode_signal_->error_message();
 	if (!err.isEmpty()) {
-		draw_unresolved_period(
-			p, annotation_height, pp.left(), pp.right());
+		draw_unresolved_period(p, pp.left(), pp.right());
 		draw_error(p, err, pp);
 		return;
 	}
@@ -176,46 +175,58 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 
 	// Iterate through the rows
 	int y = get_visual_y();
-	pair<uint64_t, uint64_t> sample_range = get_sample_range(
-		pp.left(), pp.right());
+	pair<uint64_t, uint64_t> sample_range = get_sample_range(pp.left(), pp.right());
 
 	const vector<Row> rows = decode_signal_->visible_rows();
+	bool row_added = false;
 
-	visible_rows_.clear();
-	for (const Row& row : rows) {
-		// Cache the row title widths
-		int row_title_width;
-		try {
-			row_title_width = row_title_widths_.at(row);
-		} catch (out_of_range&) {
-			const int w = p.boundingRect(QRectF(), 0, row.title()).width() +
-				RowTitleMargin;
-			row_title_widths_[row] = w;
-			row_title_width = w;
+	// TODO remove this
+	rows_.clear();
+
+	for (const Row &row : rows) {
+		// Find or create RowInfo structure for this row
+		int row_index = 0;
+		RowInfo *row_info = nullptr;
+		for (RowInfo &ri : rows_) {
+			if (ri.decoder_row == row) {
+				row_info = &ri;
+				break;
+			}
+			row_index++;
+		}
+		if (!row_info) {
+			rows_.emplace_back();
+			row_info = &rows_.back();
+			row_info->decoder_row = row;
+			row_added = true;
 		}
 
-		vector<Annotation> annotations;
-		decode_signal_->get_annotation_subset(annotations, row,
-			current_segment_, sample_range.first, sample_range.second);
-		if (!annotations.empty()) {
-			draw_annotations(annotations, p, annotation_height, pp, y,
-				get_row_color(visible_rows_.size()), row_title_width);
+		// Calculate the row title width if missing
+		if (!row_info->title_width)
+			row_info->title_width = p.boundingRect(QRectF(), 0,
+				row.title()).width() + RowTitleMargin;
 
-			y += row_height_;
-
-			visible_rows_.push_back(row);
+		if (row_info->ann_cache.empty()) {
+			vector<Annotation> annotations;
+			decode_signal_->get_annotation_subset(annotations, row,
+				current_segment_, sample_range.first, sample_range.second);
+			if (!annotations.empty())
+				build_annotation_cache(row_info, annotations, p);
 		}
+		row_info->color = get_row_color(row_index);
+
+		draw_annotations(row_info, p, pp, y);
+
+		y += row_height_;
 	}
 
 	// Draw the hatching
-	draw_unresolved_period(p, annotation_height, pp.left(), pp.right());
+	draw_unresolved_period(p, pp.left(), pp.right());
 
-	if ((int)visible_rows_.size() > max_visible_rows_) {
-		max_visible_rows_ = (int)visible_rows_.size();
-
+	if (row_added) {
 		// Call order is important, otherwise the lazy event handler won't work
-		owner_->extents_changed(false, true);
-		owner_->row_item_appearance_changed(false, true);
+//		owner_->extents_changed(false, true);
+//		owner_->row_item_appearance_changed(false, true);
 	}
 }
 
@@ -223,7 +234,7 @@ void DecodeTrace::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 {
 	assert(row_height_);
 
-	for (size_t i = 0; i < visible_rows_.size(); i++) {
+	for (size_t i = 0; i < rows_.size(); i++) {
 		const int y = i * row_height_ + get_visual_y();
 
 		p.setPen(QPen(Qt::NoPen));
@@ -240,9 +251,8 @@ void DecodeTrace::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 
 		const QRect r(pp.left() + ArrowSize * 2, y - row_height_ / 2,
 			pp.right() - pp.left(), row_height_);
-		const QString h(visible_rows_[i].title());
-		const int f = Qt::AlignLeft | Qt::AlignVCenter |
-			Qt::TextDontClip;
+		const QString h(rows_[i].decoder_row.title());
+		const int f = Qt::AlignLeft | Qt::AlignVCenter | Qt::TextDontClip;
 
 		// Draw the outline
 		p.setPen(QApplication::palette().color(QPalette::Base));
@@ -286,8 +296,7 @@ void DecodeTrace::populate_popup_form(QWidget *parent, QFormLayout *form)
 			create_decoder_form(i, dec, parent, form);
 		}
 
-		form->addRow(new QLabel(
-			tr("<i>* Required channels</i>"), parent));
+		form->addRow(new QLabel(tr("<i>* Required channels</i>"), parent));
 	}
 
 	// Add stacking button
@@ -320,25 +329,32 @@ QMenu* DecodeTrace::create_context_menu(QWidget *parent)
 	return menu;
 }
 
-void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotations,
-		QPainter &p, int h, const ViewItemPaintParams &pp, int y,
-		QColor row_color, int row_title_width)
+void DecodeTrace::build_annotation_cache(RowInfo* row_info,
+	vector<pv::data::decode::Annotation> annotations, QPainter &p)
 {
 	using namespace pv::data::decode;
 
 	Annotation::Class block_class = 0;
 	bool block_class_uniform = true;
-	qreal block_start = 0;
+	qreal block_abs_start = 0;
 	int block_ann_count = 0;
 
-	const Annotation *prev_ann;
+	Annotation *prev_ann = nullptr;
 	qreal prev_end = INT_MIN;
-
+	qreal abs_a_start, abs_a_end, prev_abs_end = 0;
 	qreal a_end;
 
+	CachedAnnotation cache_entry;
+
 	double samples_per_pixel, pixels_offset;
-	tie(pixels_offset, samples_per_pixel) =
-		get_pixels_offset_samples_per_pixel();
+	tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
+
+	assert(row_info);
+
+	// TODO Add mutex here and also in the annotation drawing method
+	row_info->ann_cache.clear();
+
+	// TODO What to do if the viewport was changed?
 
 	// Sort the annotations by start sample so that decoders
 	// can't confuse us by creating annotations out of order
@@ -347,10 +363,10 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 			return a.start_sample() < b.start_sample(); });
 
 	// Gather all annotations that form a visual "block" and draw them as such
-	for (const Annotation &a : annotations) {
+	for (Annotation &a : annotations) {
 
-		const qreal abs_a_start = a.start_sample() / samples_per_pixel;
-		const qreal abs_a_end   = a.end_sample() / samples_per_pixel;
+		abs_a_start = a.start_sample() / samples_per_pixel;
+		abs_a_end   = a.end_sample() / samples_per_pixel;
 
 		const qreal a_start = abs_a_start - pixels_offset;
 		a_end = abs_a_end - pixels_offset;
@@ -375,18 +391,43 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 		// Were the previous and this annotation more than a pixel apart?
 		if ((abs(delta) > 1) || a_is_separate) {
 			// Block was broken, draw annotations that form the current block
-			if (block_ann_count == 1)
-				draw_annotation(*prev_ann, p, h, pp, y, row_color,
-					row_title_width);
-			else if (block_ann_count > 0)
-				draw_annotation_block(block_start, prev_end, block_class,
-					block_class_uniform, p, h, y, row_color);
+			if (block_ann_count == 1) {
+				cache_entry.abs_start = block_abs_start;
+				cache_entry.abs_end = prev_abs_end;
+				cache_entry.block_class_uniform = true;
+				cache_entry.color =
+					get_annotation_color(row_info->color, prev_ann->ann_class());
+				cache_entry.ann = make_shared<Annotation>(*prev_ann);
+				row_info->ann_cache.push_back(cache_entry);
+//				draw_annotation(*prev_ann, p, ann_height_, pp, y, row_color,
+//					row_title_width);
+			}
+			else if (block_ann_count > 0) {
+				cache_entry.abs_start = block_abs_start;
+				cache_entry.abs_end = prev_abs_end;
+				cache_entry.block_class_uniform = block_class_uniform;
+				if (block_class_uniform)
+					cache_entry.color =
+						get_annotation_color(row_info->color, prev_ann->ann_class());
+				cache_entry.ann = nullptr;
+				row_info->ann_cache.push_back(cache_entry);
+//				draw_annotation_block(block_start, prev_end, block_class,
+//					block_class_uniform, p, ann_height_, y, row_color);
+			}
 
 			block_ann_count = 0;
 		}
 
 		if (a_is_separate) {
-			draw_annotation(a, p, h, pp, y, row_color, row_title_width);
+			cache_entry.abs_start = abs_a_start;
+			cache_entry.abs_end = abs_a_end;
+			cache_entry.block_class_uniform = block_class_uniform;
+			if (block_class_uniform)
+				cache_entry.color =
+					get_annotation_color(row_info->color, a.ann_class());
+			cache_entry.ann = make_shared<Annotation>(a);
+			row_info->ann_cache.push_back(cache_entry);
+//			draw_annotation(a, p, ann_height_, pp, y, row_color, row_title_width);
 			// Next annotation must start a new block. delta will be > 1
 			// because we set prev_end to INT_MIN but that's okay since
 			// block_ann_count will be 0 and nothing will be drawn
@@ -394,10 +435,11 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 			block_ann_count = 0;
 		} else {
 			prev_end = a_end;
+			prev_abs_end = abs_a_end;
 			prev_ann = &a;
 
 			if (block_ann_count == 0) {
-				block_start = a_start;
+				block_abs_start = abs_a_start;
 				block_class = a.ann_class();
 				block_class_uniform = true;
 			} else
@@ -408,47 +450,79 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 		}
 	}
 
-	if (block_ann_count == 1)
-		draw_annotation(*prev_ann, p, h, pp, y, row_color, row_title_width);
-	else if (block_ann_count > 0)
-		draw_annotation_block(block_start, prev_end, block_class,
-			block_class_uniform, p, h, y, row_color);
+	if (block_ann_count == 1) {
+		cache_entry.abs_start = block_abs_start;
+		cache_entry.abs_end = prev_abs_end;
+		cache_entry.block_class_uniform = true;
+		cache_entry.color =
+			get_annotation_color(row_info->color, prev_ann->ann_class());
+		cache_entry.ann = make_shared<Annotation>(*prev_ann);
+		row_info->ann_cache.push_back(cache_entry);
+//				draw_annotation(*prev_ann, p, ann_height_, pp, y, row_color,
+//					row_title_width);
+	}
+	else if (block_ann_count > 0) {
+		cache_entry.abs_start = block_abs_start;
+		cache_entry.abs_end = prev_abs_end;
+		cache_entry.block_class_uniform = block_class_uniform;
+		if (block_class_uniform)
+			cache_entry.color =
+				get_annotation_color(row_info->color, prev_ann->ann_class());
+		cache_entry.ann = nullptr;
+		row_info->ann_cache.push_back(cache_entry);
+//				draw_annotation_block(block_start, prev_end, block_class,
+//					block_class_uniform, p, ann_height_, y, row_color);
+	}
 }
 
-void DecodeTrace::draw_annotation(const pv::data::decode::Annotation &a,
-	QPainter &p, int h, const ViewItemPaintParams &pp, int y,
-	QColor row_color, int row_title_width) const
+void DecodeTrace::draw_annotations(RowInfo* row_info, QPainter &p,
+	const ViewItemPaintParams &pp, int y)
 {
 	double samples_per_pixel, pixels_offset;
-	tie(pixels_offset, samples_per_pixel) =
-		get_pixels_offset_samples_per_pixel();
+	tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
 
-	const double start = a.start_sample() / samples_per_pixel -
-		pixels_offset;
-	const double end = a.end_sample() / samples_per_pixel - pixels_offset;
+	// TODO What to do if the viewport was changed?
 
-	QColor color = get_annotation_color(row_color, a.ann_class());
-	p.setPen(color.darker());
-	p.setBrush(color);
+	for (CachedAnnotation &cache_entry : row_info->ann_cache) {
 
+		const qreal start = cache_entry.abs_start - pixels_offset;
+		const qreal end = cache_entry.abs_end - pixels_offset;
+
+		if (cache_entry.ann)
+			// Single annotation
+			draw_annotation(cache_entry.ann, p, start, end, y, pp,
+				cache_entry.color, row_info->title_width);
+		else
+			// Annotation block
+			draw_annotation_block(start, end, cache_entry.block_class_uniform,
+				p, y, cache_entry.color);
+	}
+}
+
+void DecodeTrace::draw_annotation(shared_ptr<Annotation> a, QPainter &p,
+	qreal start, qreal end, int y, const ViewItemPaintParams &pp,
+	QColor color, int row_title_width) const
+{
 	if (start > pp.right() + DrawPadding || end < pp.left() - DrawPadding)
 		return;
 
-	if (a.start_sample() == a.end_sample())
-		draw_instant(a, p, h, start, y);
+	p.setPen(color.darker());
+	p.setBrush(color);
+
+	if (a->start_sample() == a->end_sample())
+		draw_instant(a, p, start, y);
 	else
-		draw_range(a, p, h, start, end, y, pp, row_title_width);
+		draw_range(a, p, start, end, y, pp, row_title_width);
 }
 
 void DecodeTrace::draw_annotation_block(qreal start, qreal end,
-	Annotation::Class ann_class, bool use_ann_format, QPainter &p, int h,
-	int y, QColor row_color) const
+	bool block_class_uniform, QPainter &p, int y, QColor color) const
 {
-	const double top = y + .5 - h / 2;
-	const double bottom = y + .5 + h / 2;
+	const double top = y + .5 - ann_height_ / 2;
+	const double bottom = y + .5 + ann_height_ / 2;
 
 	const QRectF rect(start, top, end - start, bottom - top);
-	const int r = h / 4;
+	const int r = ann_height_ / 4;
 
 	p.setPen(QPen(Qt::NoPen));
 	p.setBrush(Qt::white);
@@ -457,8 +531,7 @@ void DecodeTrace::draw_annotation_block(qreal start, qreal end,
 	// If all annotations in this block are of the same type, we can use the
 	// one format that all of these annotations have. Otherwise, we should use
 	// a neutral color (i.e. gray)
-	if (use_ann_format) {
-		const QColor color = get_annotation_color(row_color, ann_class);
+	if (block_class_uniform) {
 		p.setPen(color.darker());
 		p.setBrush(QBrush(color, Qt::Dense4Pattern));
 	} else {
@@ -469,28 +542,28 @@ void DecodeTrace::draw_annotation_block(qreal start, qreal end,
 	p.drawRoundedRect(rect, r, r);
 }
 
-void DecodeTrace::draw_instant(const pv::data::decode::Annotation &a, QPainter &p,
-	int h, qreal x, int y) const
+void DecodeTrace::draw_instant(shared_ptr<Annotation> a, QPainter &p,
+	qreal x, int y) const
 {
-	const QString text = a.annotations().empty() ?
-		QString() : a.annotations().back();
+	const QString text = a->annotations().empty() ?
+		QString() : a->annotations().back();
 	const qreal w = min((qreal)p.boundingRect(QRectF(), 0, text).width(),
-		0.0) + h;
-	const QRectF rect(x - w / 2, y - h / 2, w, h);
+		0.0) + ann_height_;
+	const QRectF rect(x - w / 2, y - ann_height_ / 2, w, ann_height_);
 
-	p.drawRoundedRect(rect, h / 2, h / 2);
+	p.drawRoundedRect(rect, ann_height_ / 2, ann_height_ / 2);
 
 	p.setPen(Qt::black);
 	p.drawText(rect, Qt::AlignCenter | Qt::AlignVCenter, text);
 }
 
-void DecodeTrace::draw_range(const pv::data::decode::Annotation &a, QPainter &p,
-	int h, qreal start, qreal end, int y, const ViewItemPaintParams &pp,
+void DecodeTrace::draw_range(shared_ptr<Annotation> a, QPainter &p,
+	qreal start, qreal end, int y, const ViewItemPaintParams &pp,
 	int row_title_width) const
 {
-	const qreal top = y + .5 - h / 2;
-	const qreal bottom = y + .5 + h / 2;
-	const vector<QString> annotations = a.annotations();
+	const qreal top = y + .5 - ann_height_ / 2;
+	const qreal bottom = y + .5 + ann_height_ / 2;
+	const vector<QString> annotations = a->annotations();
 
 	// If the two ends are within 1 pixel, draw a vertical line
 	if (start + 1.0 > end) {
@@ -521,7 +594,7 @@ void DecodeTrace::draw_range(const pv::data::decode::Annotation &a, QPainter &p,
 	const int real_end = min(ann_end, pp.right());
 	const int real_width = real_end - real_start;
 
-	QRectF rect(real_start, y - h / 2, real_width, h);
+	QRectF rect(real_start, y - ann_height_ / 2, real_width, ann_height_);
 	if (rect.width() <= 4)
 		return;
 
@@ -531,10 +604,10 @@ void DecodeTrace::draw_range(const pv::data::decode::Annotation &a, QPainter &p,
 	QString best_annotation;
 	int best_width = 0;
 
-	for (const QString &a : annotations) {
-		const int w = p.boundingRect(QRectF(), 0, a).width();
+	for (const QString &s : annotations) {
+		const int w = p.boundingRect(QRectF(), 0, s).width();
 		if (w <= rect.width() && w > best_width)
-			best_annotation = a, best_width = w;
+			best_annotation = s, best_width = w;
 	}
 
 	if (best_annotation.isEmpty())
@@ -566,7 +639,7 @@ void DecodeTrace::draw_error(QPainter &p, const QString &message,
 	p.drawText(text_rect, message);
 }
 
-void DecodeTrace::draw_unresolved_period(QPainter &p, int h, int left, int right) const
+void DecodeTrace::draw_unresolved_period(QPainter &p, int left, int right) const
 {
 	using namespace pv::data;
 	using pv::data::decode::Decoder;
@@ -589,7 +662,8 @@ void DecodeTrace::draw_unresolved_period(QPainter &p, int h, int left, int right
 		samples_per_pixel - pixels_offset, left - 1.0);
 	const double end = min(sample_count / samples_per_pixel -
 		pixels_offset, right + 1.0);
-	const QRectF no_decode_rect(start, y - (h / 2) - 0.5, end - start, h);
+	const QRectF no_decode_rect(start, y - (ann_height_ / 2) - 0.5,
+		end - start, ann_height_);
 
 	p.setPen(QPen(Qt::NoPen));
 	p.setBrush(Qt::white);
@@ -678,7 +752,7 @@ int DecodeTrace::get_row_at_point(const QPoint &point)
 
 	const int row = y / row_height_;
 
-	if (row >= (int)visible_rows_.size())
+	if (row >= (int)(rows_.size()))
 		return -1;
 
 	return row;
@@ -699,7 +773,7 @@ const QString DecodeTrace::get_annotation_at_point(const QPoint &point)
 
 	vector<pv::data::decode::Annotation> annotations;
 
-	decode_signal_->get_annotation_subset(annotations, visible_rows_[row],
+	decode_signal_->get_annotation_subset(annotations, rows_[row].decoder_row,
 		current_segment_, sample_range.first, sample_range.second);
 
 	return (annotations.empty()) ?
@@ -887,8 +961,7 @@ void DecodeTrace::on_delayed_trace_update()
 
 void DecodeTrace::on_decode_reset()
 {
-	visible_rows_.clear();
-	max_visible_rows_ = 0;
+	rows_.clear();
 
 	if (owner_)
 		owner_->row_item_appearance_changed(false, true);
@@ -955,7 +1028,6 @@ void DecodeTrace::on_delete_decoder(int index)
 	decode_signal_->remove_decoder(index);
 
 	// Force re-calculation of the trace height, see paint_mid()
-	max_visible_rows_ = 0;
 	owner_->extents_changed(false, true);
 
 	// Update the popup
@@ -971,7 +1043,6 @@ void DecodeTrace::on_show_hide_decoder(int index)
 
 	if (!state) {
 		// Force re-calculation of the trace height, see paint_mid()
-		max_visible_rows_ = 0;
 		owner_->extents_changed(false, true);
 	}
 

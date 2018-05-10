@@ -66,6 +66,12 @@ bool Row::operator<(const Row &other) const
 		(decoder_ == other.decoder_ && row_ < other.row_);
 }
 
+bool Row::operator==(const Row &other) const
+{
+	// Do both rows point at the same instances?
+	return (decoder_ == other.decoder_) && (row_ == other.row());
+}
+
 }  // namespace decode
 }  // namespace data
 }  // namespace pv

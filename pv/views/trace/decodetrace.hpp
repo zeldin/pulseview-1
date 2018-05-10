@@ -42,6 +42,7 @@ using std::map;
 using std::pair;
 using std::shared_ptr;
 using std::vector;
+using pv::data::decode::Annotation;
 
 struct srd_channel;
 struct srd_decoder;
@@ -71,6 +72,20 @@ class DecodeTrace : public Trace
 	Q_OBJECT
 
 private:
+	typedef struct {
+		qreal abs_start, abs_end;
+		QColor color;
+		bool block_class_uniform;
+		shared_ptr<Annotation> ann;
+	} CachedAnnotation;
+
+	typedef struct {
+		data::decode::Row decoder_row;
+		vector<CachedAnnotation> ann_cache;
+		int title_width;
+		QColor color;
+	} RowInfo;
+
 	static const QColor ErrorBgColor;
 	static const QColor NoDecodeColor;
 
@@ -123,30 +138,30 @@ public:
 	void delete_pressed();
 
 private:
-	void draw_annotations(vector<pv::data::decode::Annotation> annotations,
-		QPainter &p, int h, const ViewItemPaintParams &pp, int y,
-		QColor row_color, int row_title_width);
+	void build_annotation_cache(RowInfo* row_info,
+		vector<Annotation> annotations, QPainter &p);
 
-	void draw_annotation(const pv::data::decode::Annotation &a, QPainter &p,
-		int h, const ViewItemPaintParams &pp, int y,
-		QColor row_color, int row_title_width) const;
+	void draw_annotations(RowInfo* row_info, QPainter &p,
+		const ViewItemPaintParams &pp, int y);
+
+	void draw_annotation(shared_ptr<Annotation> a, QPainter &p,
+		qreal start, qreal end, int y, const ViewItemPaintParams &pp,
+		QColor color, int row_title_width) const;
 
 	void draw_annotation_block(qreal start, qreal end,
-		pv::data::decode::Annotation::Class ann_class, bool use_ann_format,
-		QPainter &p, int h, int y, QColor row_color) const;
+		bool block_class_uniform, QPainter &p, int y, QColor color) const;
 
-	void draw_instant(const pv::data::decode::Annotation &a, QPainter &p,
-		int h, qreal x, int y) const;
+	void draw_instant(shared_ptr<Annotation> a, QPainter &p,
+		qreal x, int y) const;
 
-	void draw_range(const pv::data::decode::Annotation &a, QPainter &p,
-		int h, qreal start, qreal end, int y, const ViewItemPaintParams &pp,
+	void draw_range(shared_ptr<Annotation> a, QPainter &p,
+		qreal start, qreal end, int y, const ViewItemPaintParams &pp,
 		int row_title_width) const;
 
 	void draw_error(QPainter &p, const QString &message,
 		const ViewItemPaintParams &pp);
 
-	void draw_unresolved_period(QPainter &p, int h, int left,
-		int right) const;
+	void draw_unresolved_period(QPainter &p, int left, int right) const;
 
 	pair<double, double> get_pixels_offset_samples_per_pixel() const;
 
@@ -201,8 +216,7 @@ private Q_SLOTS:
 private:
 	pv::Session &session_;
 	shared_ptr<data::DecodeSignal> decode_signal_;
-
-	vector<data::decode::Row> visible_rows_;
+	vector<RowInfo> rows_;
 
 	map<QComboBox*, uint16_t> channel_id_map_;  // channel selector -> decode channel ID
 	map<QComboBox*, uint16_t> init_state_map_;  // init state selector -> decode channel ID
@@ -210,8 +224,7 @@ private:
 
 	vector<pv::widgets::DecoderGroupBox*> decoder_forms_;
 
-	map<data::decode::Row, int> row_title_widths_;
-	int row_height_, max_visible_rows_;
+	int row_height_, ann_height_;
 
 	int min_useful_label_width_;
 
