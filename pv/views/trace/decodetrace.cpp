@@ -329,7 +329,21 @@ QMenu* DecodeTrace::create_context_menu(QWidget *parent)
 	return menu;
 }
 
-void DecodeTrace::build_annotation_cache(RowInfo* row_info,
+void DecodeTrace::cache_annotation(RowInfo *row_info, qreal abs_start,
+	qreal abs_end, QColor color, bool block_class_uniform, Annotation *ann)
+{
+	CachedAnnotation cache_entry;
+
+	cache_entry.abs_start = abs_start;
+	cache_entry.abs_end = abs_end;
+	cache_entry.block_class_uniform = block_class_uniform;
+	cache_entry.color = color;
+	cache_entry.ann = make_shared<Annotation>(*ann);
+
+	row_info->ann_cache.push_back(cache_entry);
+}
+
+void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 	vector<pv::data::decode::Annotation> annotations, QPainter &p)
 {
 	using namespace pv::data::decode;
@@ -343,8 +357,6 @@ void DecodeTrace::build_annotation_cache(RowInfo* row_info,
 	qreal prev_end = INT_MIN;
 	qreal abs_a_start, abs_a_end, prev_abs_end = 0;
 	qreal a_end;
-
-	CachedAnnotation cache_entry;
 
 	double samples_per_pixel, pixels_offset;
 	tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
@@ -391,43 +403,24 @@ void DecodeTrace::build_annotation_cache(RowInfo* row_info,
 		// Were the previous and this annotation more than a pixel apart?
 		if ((abs(delta) > 1) || a_is_separate) {
 			// Block was broken, draw annotations that form the current block
-			if (block_ann_count == 1) {
-				cache_entry.abs_start = block_abs_start;
-				cache_entry.abs_end = prev_abs_end;
-				cache_entry.block_class_uniform = true;
-				cache_entry.color =
-					get_annotation_color(row_info->color, prev_ann->ann_class());
-				cache_entry.ann = make_shared<Annotation>(*prev_ann);
-				row_info->ann_cache.push_back(cache_entry);
-//				draw_annotation(*prev_ann, p, ann_height_, pp, y, row_color,
-//					row_title_width);
-			}
-			else if (block_ann_count > 0) {
-				cache_entry.abs_start = block_abs_start;
-				cache_entry.abs_end = prev_abs_end;
-				cache_entry.block_class_uniform = block_class_uniform;
-				if (block_class_uniform)
-					cache_entry.color =
-						get_annotation_color(row_info->color, prev_ann->ann_class());
-				cache_entry.ann = nullptr;
-				row_info->ann_cache.push_back(cache_entry);
-//				draw_annotation_block(block_start, prev_end, block_class,
-//					block_class_uniform, p, ann_height_, y, row_color);
+			if (block_ann_count > 0) {
+				if (block_ann_count == 1)
+					cache_annotation(row_info, block_abs_start, prev_abs_end,
+						get_annotation_color(row_info->color, prev_ann->ann_class()),
+						true, prev_ann);
+				else
+					cache_annotation(row_info, block_abs_start, prev_abs_end,
+						get_annotation_color(row_info->color, prev_ann->ann_class()),
+						block_class_uniform);
 			}
 
 			block_ann_count = 0;
 		}
 
 		if (a_is_separate) {
-			cache_entry.abs_start = abs_a_start;
-			cache_entry.abs_end = abs_a_end;
-			cache_entry.block_class_uniform = block_class_uniform;
-			if (block_class_uniform)
-				cache_entry.color =
-					get_annotation_color(row_info->color, a.ann_class());
-			cache_entry.ann = make_shared<Annotation>(a);
-			row_info->ann_cache.push_back(cache_entry);
-//			draw_annotation(a, p, ann_height_, pp, y, row_color, row_title_width);
+			cache_annotation(row_info, abs_a_start, abs_a_end,
+				get_annotation_color(row_info->color, a.ann_class()),
+				true, &a);
 			// Next annotation must start a new block. delta will be > 1
 			// because we set prev_end to INT_MIN but that's okay since
 			// block_ann_count will be 0 and nothing will be drawn
@@ -450,32 +443,19 @@ void DecodeTrace::build_annotation_cache(RowInfo* row_info,
 		}
 	}
 
-	if (block_ann_count == 1) {
-		cache_entry.abs_start = block_abs_start;
-		cache_entry.abs_end = prev_abs_end;
-		cache_entry.block_class_uniform = true;
-		cache_entry.color =
-			get_annotation_color(row_info->color, prev_ann->ann_class());
-		cache_entry.ann = make_shared<Annotation>(*prev_ann);
-		row_info->ann_cache.push_back(cache_entry);
-//				draw_annotation(*prev_ann, p, ann_height_, pp, y, row_color,
-//					row_title_width);
-	}
-	else if (block_ann_count > 0) {
-		cache_entry.abs_start = block_abs_start;
-		cache_entry.abs_end = prev_abs_end;
-		cache_entry.block_class_uniform = block_class_uniform;
-		if (block_class_uniform)
-			cache_entry.color =
-				get_annotation_color(row_info->color, prev_ann->ann_class());
-		cache_entry.ann = nullptr;
-		row_info->ann_cache.push_back(cache_entry);
-//				draw_annotation_block(block_start, prev_end, block_class,
-//					block_class_uniform, p, ann_height_, y, row_color);
+	if (block_ann_count > 0) {
+		if (block_ann_count == 1)
+			cache_annotation(row_info, block_abs_start, prev_abs_end,
+				get_annotation_color(row_info->color, prev_ann->ann_class()),
+				true, prev_ann);
+		else
+			cache_annotation(row_info, block_abs_start, prev_abs_end,
+				get_annotation_color(row_info->color, prev_ann->ann_class()),
+				block_class_uniform);
 	}
 }
 
-void DecodeTrace::draw_annotations(RowInfo* row_info, QPainter &p,
+void DecodeTrace::draw_annotations(RowInfo *row_info, QPainter &p,
 	const ViewItemPaintParams &pp, int y)
 {
 	double samples_per_pixel, pixels_offset;

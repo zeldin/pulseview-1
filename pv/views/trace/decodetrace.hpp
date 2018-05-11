@@ -138,10 +138,13 @@ public:
 	void delete_pressed();
 
 private:
-	void build_annotation_cache(RowInfo* row_info,
+	void cache_annotation(RowInfo *row_info, qreal abs_start, qreal abs_end,
+		QColor color, bool block_class_uniform, Annotation *ann = nullptr);
+
+	void build_annotation_cache(RowInfo *row_info,
 		vector<Annotation> annotations, QPainter &p);
 
-	void draw_annotations(RowInfo* row_info, QPainter &p,
+	void draw_annotations(RowInfo *row_info, QPainter &p,
 		const ViewItemPaintParams &pp, int y);
 
 	void draw_annotation(shared_ptr<Annotation> a, QPainter &p,
