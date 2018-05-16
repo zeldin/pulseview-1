@@ -21,7 +21,6 @@ extern "C" {
 #include <libsigrokdecode/libsigrokdecode.h>
 }
 
-#include <mutex>
 #include <tuple>
 
 #include <extdef.h>
@@ -92,7 +91,8 @@ DecodeTrace::DecodeTrace(pv::Session &session,
 	session_(session),
 	row_height_(0),
 	delete_mapper_(this),
-	show_hide_mapper_(this)
+	show_hide_mapper_(this),
+	painting_(false)
 {
 	decode_signal_ = dynamic_pointer_cast<data::DecodeSignal>(base_);
 
@@ -153,12 +153,21 @@ pair<int, int> DecodeTrace::v_extents() const
 
 void DecodeTrace::paint_back(QPainter &p, ViewItemPaintParams &pp)
 {
+	if (painting_)
+		return;
+
 	Trace::paint_back(p, pp);
 	paint_axis(p, pp, get_visual_y());
 }
 
 void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 {
+	if (painting_) {
+		if (!delayed_trace_updater_.isActive())
+			delayed_trace_updater_.start();
+		return;
+	}
+
 	const int text_height = ViewItemPaintParams::text_height();
 	row_height_ = (text_height * 6) / 4;
 	ann_height_ = (text_height * 5) / 4;
@@ -170,6 +179,8 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 		return;
 	}
 
+	painting_ = true;
+
 	// Set default pen to allow for text width calculation
 	p.setPen(Qt::black);
 
@@ -177,11 +188,14 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 	int y = get_visual_y();
 	pair<uint64_t, uint64_t> sample_range = get_sample_range(pp.left(), pp.right());
 
+	// Just because the view says we see a certain sample range it
+	// doesn't mean we have this many decoded samples, too, so crop
+	// the range to what has been decoded already
+	sample_range.second = min((int64_t)sample_range.second,
+		decode_signal_->get_decoded_sample_count(current_segment_));
+
 	const vector<Row> rows = decode_signal_->visible_rows();
 	bool row_added = false;
-
-	// TODO remove this
-	rows_.clear();
 
 	for (const Row &row : rows) {
 		// Find or create RowInfo structure for this row
@@ -198,6 +212,7 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 			rows_.emplace_back();
 			row_info = &rows_.back();
 			row_info->decoder_row = row;
+			invalidate_annotation_cache(row_info);
 			row_added = true;
 		}
 
@@ -206,12 +221,17 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 			row_info->title_width = p.boundingRect(QRectF(), 0,
 				row.title()).width() + RowTitleMargin;
 
-		if (row_info->ann_cache.empty()) {
+		if (annotation_cache_needs_update(row_info, current_segment_, sample_range)) {
 			vector<Annotation> annotations;
 			decode_signal_->get_annotation_subset(annotations, row,
 				current_segment_, sample_range.first, sample_range.second);
 			if (!annotations.empty())
 				build_annotation_cache(row_info, annotations, p);
+
+			row_info->ann_cache_sample_range.first =
+				min(row_info->ann_cache_sample_range.first, sample_range.first);
+			row_info->ann_cache_sample_range.second =
+				max(row_info->ann_cache_sample_range.second, sample_range.second);
 		}
 		row_info->color = get_row_color(row_index);
 
@@ -225,13 +245,18 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 
 	if (row_added) {
 		// Call order is important, otherwise the lazy event handler won't work
-//		owner_->extents_changed(false, true);
-//		owner_->row_item_appearance_changed(false, true);
+		owner_->extents_changed(false, true);
+		owner_->row_item_appearance_changed(false, true);
 	}
+
+	painting_ = false;
 }
 
 void DecodeTrace::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 {
+	if (painting_)
+		return;
+
 	assert(row_height_);
 
 	for (size_t i = 0; i < rows_.size(); i++) {
@@ -329,6 +354,13 @@ QMenu* DecodeTrace::create_context_menu(QWidget *parent)
 	return menu;
 }
 
+void DecodeTrace::invalidate_annotation_cache(RowInfo *row_info)
+{
+	row_info->ann_cache.clear();
+	row_info->ann_cache_sample_range.first  = INT_MAX;
+	row_info->ann_cache_sample_range.second = 0;
+}
+
 void DecodeTrace::cache_annotation(RowInfo *row_info, qreal abs_start,
 	qreal abs_end, QColor color, bool block_class_uniform, Annotation *ann)
 {
@@ -338,9 +370,52 @@ void DecodeTrace::cache_annotation(RowInfo *row_info, qreal abs_start,
 	cache_entry.abs_end = abs_end;
 	cache_entry.block_class_uniform = block_class_uniform;
 	cache_entry.color = color;
-	cache_entry.ann = make_shared<Annotation>(*ann);
+
+	if (ann)
+		cache_entry.ann = make_shared<Annotation>(*ann);
 
 	row_info->ann_cache.push_back(cache_entry);
+}
+
+bool DecodeTrace::annotation_cache_needs_update(RowInfo *row_info, int segment,
+	pair<uint64_t, uint64_t> sample_range)
+{
+	// TODO Make the cache multi-segment capable
+	(void)segment;
+
+	static double prev_samples_per_pixel = 0;
+
+	bool result = false;
+
+	double samples_per_pixel, pixels_offset;
+	tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
+
+	// Invalidate cache if the user zoomed in or out
+	if (samples_per_pixel != prev_samples_per_pixel) {
+		prev_samples_per_pixel = samples_per_pixel;
+		// Invalidate all row caches since this event will only be caught for one row
+		for (RowInfo &ri : rows_)
+			invalidate_annotation_cache(&ri);
+		return true;
+	}
+
+	const qreal inp_start = sample_range.first / samples_per_pixel;
+	const qreal inp_end   = sample_range.second / samples_per_pixel;
+
+	const qreal cache_start = row_info->ann_cache_sample_range.first / samples_per_pixel;
+	const qreal cache_end   = row_info->ann_cache_sample_range.second / samples_per_pixel;
+
+	if (inp_start < cache_start) {
+		// TODO Merge ranges/annotations instead of clearing the cache
+		invalidate_annotation_cache(row_info);
+		result = true;
+	} else if (inp_end > cache_end) {
+		// TODO Merge ranges/annotations instead of clearing the cache
+		invalidate_annotation_cache(row_info);
+		result = true;
+	}
+
+	return result;
 }
 
 void DecodeTrace::build_annotation_cache(RowInfo *row_info,
@@ -363,8 +438,8 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 
 	assert(row_info);
 
-	// TODO Add mutex here and also in the annotation drawing method
-	row_info->ann_cache.clear();
+	if (annotations.empty())
+		return;
 
 	// TODO What to do if the viewport was changed?
 
@@ -929,8 +1004,8 @@ QComboBox* DecodeTrace::create_channel_selector_init_state(QWidget *parent,
 
 void DecodeTrace::on_new_annotations()
 {
-	if (!delayed_trace_updater_.isActive())
-		delayed_trace_updater_.start();
+	if (owner_)
+		owner_->row_item_appearance_changed(false, true);
 }
 
 void DecodeTrace::on_delayed_trace_update()

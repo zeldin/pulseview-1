@@ -22,6 +22,7 @@
 
 #include "trace.hpp"
 
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
@@ -37,6 +38,7 @@
 #include <pv/data/decode/row.hpp>
 #include <pv/data/signalbase.hpp>
 
+using std::atomic;
 using std::list;
 using std::map;
 using std::pair;
@@ -82,6 +84,7 @@ private:
 	typedef struct {
 		data::decode::Row decoder_row;
 		vector<CachedAnnotation> ann_cache;
+		pair<uint64_t, uint64_t> ann_cache_sample_range;
 		int title_width;
 		QColor color;
 	} RowInfo;
@@ -138,8 +141,13 @@ public:
 	void delete_pressed();
 
 private:
+	void invalidate_annotation_cache(RowInfo *row_info);
+
 	void cache_annotation(RowInfo *row_info, qreal abs_start, qreal abs_end,
 		QColor color, bool block_class_uniform, Annotation *ann = nullptr);
+
+	bool annotation_cache_needs_update(RowInfo *row_info, int segment,
+		pair<uint64_t, uint64_t> sample_range);
 
 	void build_annotation_cache(RowInfo *row_info,
 		vector<Annotation> annotations, QPainter &p);
@@ -225,6 +233,8 @@ private:
 	map<QComboBox*, uint16_t> init_state_map_;  // init state selector -> decode channel ID
 	list< shared_ptr<pv::binding::Decoder> > bindings_;
 
+	mutex paint_mutex_;
+
 	vector<pv::widgets::DecoderGroupBox*> decoder_forms_;
 
 	int row_height_, ann_height_;
@@ -233,6 +243,7 @@ private:
 
 	QSignalMapper delete_mapper_, show_hide_mapper_;
 
+	atomic<bool> painting_;
 	QTimer delayed_trace_updater_;
 };
 
