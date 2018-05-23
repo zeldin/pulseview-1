@@ -36,6 +36,8 @@ extern "C" {
 #include <QPushButton>
 #include <QToolTip>
 
+#include <QDebug>
+
 #include "decodetrace.hpp"
 #include "view.hpp"
 #include "viewport.hpp"
@@ -56,6 +58,7 @@ using std::make_pair;
 using std::make_shared;
 using std::max;
 using std::min;
+using std::move;
 using std::out_of_range;
 using std::pair;
 using std::shared_ptr;
@@ -180,7 +183,9 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 	}
 
 	painting_ = true;
-
+qDebug() << "";
+double samples_per_pixel, pixels_offset;
+tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
 	// Set default pen to allow for text width calculation
 	p.setPen(Qt::black);
 
@@ -222,17 +227,19 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 				row.title()).width() + RowTitleMargin;
 
 		if (annotation_cache_needs_update(row_info, current_segment_, sample_range)) {
+qDebug() << "Updating row" << row_index;
 			vector<Annotation> annotations;
 			decode_signal_->get_annotation_subset(annotations, row,
 				current_segment_, sample_range.first, sample_range.second);
 			if (!annotations.empty())
-				build_annotation_cache(row_info, annotations, p);
+				build_annotation_cache(row_info, sample_range, annotations, p);
 
-			row_info->ann_cache_sample_range.first =
-				min(row_info->ann_cache_sample_range.first, sample_range.first);
-			row_info->ann_cache_sample_range.second =
-				max(row_info->ann_cache_sample_range.second, sample_range.second);
-		}
+if (row_info->ann_cache.size() > 0)
+qDebug() << "Cache sample range for row" << row_index << "is now" << row_info->ann_cache_sample_range.first << row_info->ann_cache_sample_range.second << "with last ann ending on" << (int)(row_info->ann_cache.back().abs_end * samples_per_pixel);
+else
+qDebug() << "Cache sample range for row" << row_index << "is now" << row_info->ann_cache_sample_range.first << row_info->ann_cache_sample_range.second;
+
+		} else qDebug() << "Not updating row" << row_index;
 		row_info->color = get_row_color(row_index);
 
 		draw_annotations(row_info, p, pp, y);
@@ -361,7 +368,7 @@ void DecodeTrace::invalidate_annotation_cache(RowInfo *row_info)
 	row_info->ann_cache_sample_range.second = 0;
 }
 
-void DecodeTrace::cache_annotation(RowInfo *row_info, qreal abs_start,
+void DecodeTrace::cache_annotation(vector<CachedAnnotation> &ann_cache, qreal abs_start,
 	qreal abs_end, QColor color, bool block_class_uniform, Annotation *ann)
 {
 	CachedAnnotation cache_entry;
@@ -374,7 +381,7 @@ void DecodeTrace::cache_annotation(RowInfo *row_info, qreal abs_start,
 	if (ann)
 		cache_entry.ann = make_shared<Annotation>(*ann);
 
-	row_info->ann_cache.push_back(cache_entry);
+	ann_cache.push_back(cache_entry);
 }
 
 bool DecodeTrace::annotation_cache_needs_update(RowInfo *row_info, int segment,
@@ -405,23 +412,21 @@ bool DecodeTrace::annotation_cache_needs_update(RowInfo *row_info, int segment,
 	const qreal cache_start = row_info->ann_cache_sample_range.first / samples_per_pixel;
 	const qreal cache_end   = row_info->ann_cache_sample_range.second / samples_per_pixel;
 
-	if (inp_start < cache_start) {
-		// TODO Merge ranges/annotations instead of clearing the cache
-		invalidate_annotation_cache(row_info);
+qDebug() << sample_range.first << sample_range.second << " / " << row_info->ann_cache_sample_range.first << row_info->ann_cache_sample_range.second;
+
+	if ((inp_start < cache_start) || (inp_end > cache_end))
 		result = true;
-	} else if (inp_end > cache_end) {
-		// TODO Merge ranges/annotations instead of clearing the cache
-		invalidate_annotation_cache(row_info);
-		result = true;
-	}
 
 	return result;
 }
 
 void DecodeTrace::build_annotation_cache(RowInfo *row_info,
+	pair<uint64_t, uint64_t> sample_range,
 	vector<pv::data::decode::Annotation> annotations, QPainter &p)
 {
 	using namespace pv::data::decode;
+
+	vector<CachedAnnotation> ann_cache;
 
 	Annotation::Class block_class = 0;
 	bool block_class_uniform = true;
@@ -441,7 +446,29 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 	if (annotations.empty())
 		return;
 
-	// TODO What to do if the viewport was changed?
+	// The annotation cache cannot have gaps as of now, so make sure we operate
+	// on a contiguous range; in other words, the ranges must overlap. If they
+	// don't, clear the cache
+	bool prepend_range = false, append_range = false;
+
+	if (row_info->ann_cache.size() > 0) {
+		if ((sample_range.first < row_info->ann_cache_sample_range.first) &&
+			(sample_range.second > row_info->ann_cache_sample_range.second)) {
+qDebug() << "Cleared annotation cache because ann cache is a sub set";
+			invalidate_annotation_cache(row_info);
+		} else if ((sample_range.first <= row_info->ann_cache_sample_range.first) &&
+			(sample_range.second >= row_info->ann_cache_sample_range.first)) {
+qDebug() << "Merge mode: prepend";
+			prepend_range = true;
+		} else if ((sample_range.first <= row_info->ann_cache_sample_range.second) &&
+				(sample_range.second >= row_info->ann_cache_sample_range.second)) {
+qDebug() << "Merge mode: append";
+			append_range = true;
+		} else {
+qDebug() << "Cleared annotation cache because of non-contiguous ranges";
+			invalidate_annotation_cache(row_info);
+		}
+	}
 
 	// Sort the annotations by start sample so that decoders
 	// can't confuse us by creating annotations out of order
@@ -451,9 +478,12 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 
 	// Gather all annotations that form a visual "block" and draw them as such
 	for (Annotation &a : annotations) {
-
 		abs_a_start = a.start_sample() / samples_per_pixel;
 		abs_a_end   = a.end_sample() / samples_per_pixel;
+
+		if (append_range && (row_info->ann_cache.size() > 0) &&
+			(abs_a_end < row_info->ann_cache.back().abs_end))
+			continue;
 
 		const qreal a_start = abs_a_start - pixels_offset;
 		a_end = abs_a_end - pixels_offset;
@@ -480,11 +510,11 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 			// Block was broken, draw annotations that form the current block
 			if (block_ann_count > 0) {
 				if (block_ann_count == 1)
-					cache_annotation(row_info, block_abs_start, prev_abs_end,
+					cache_annotation(ann_cache, block_abs_start, prev_abs_end,
 						get_annotation_color(row_info->color, prev_ann->ann_class()),
 						true, prev_ann);
 				else
-					cache_annotation(row_info, block_abs_start, prev_abs_end,
+					cache_annotation(ann_cache, block_abs_start, prev_abs_end,
 						get_annotation_color(row_info->color, prev_ann->ann_class()),
 						block_class_uniform);
 			}
@@ -493,7 +523,7 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 		}
 
 		if (a_is_separate) {
-			cache_annotation(row_info, abs_a_start, abs_a_end,
+			cache_annotation(ann_cache, abs_a_start, abs_a_end,
 				get_annotation_color(row_info->color, a.ann_class()),
 				true, &a);
 			// Next annotation must start a new block. delta will be > 1
@@ -520,14 +550,26 @@ void DecodeTrace::build_annotation_cache(RowInfo *row_info,
 
 	if (block_ann_count > 0) {
 		if (block_ann_count == 1)
-			cache_annotation(row_info, block_abs_start, prev_abs_end,
+			cache_annotation(ann_cache, block_abs_start, prev_abs_end,
 				get_annotation_color(row_info->color, prev_ann->ann_class()),
 				true, prev_ann);
 		else
-			cache_annotation(row_info, block_abs_start, prev_abs_end,
+			cache_annotation(ann_cache, block_abs_start, prev_abs_end,
 				get_annotation_color(row_info->color, prev_ann->ann_class()),
 				block_class_uniform);
 	}
+
+	// Merge local and row caches
+	if (prepend_range || append_range)
+		qDebug() << "-- append or prepend set, merging"; // TODO perform merge
+	else
+		row_info->ann_cache = move(ann_cache);
+
+	// Update cache range
+	row_info->ann_cache_sample_range.first =
+		min(row_info->ann_cache_sample_range.first, sample_range.first);
+	row_info->ann_cache_sample_range.second =
+		max(row_info->ann_cache_sample_range.second, sample_range.second);
 }
 
 void DecodeTrace::draw_annotations(RowInfo *row_info, QPainter &p,

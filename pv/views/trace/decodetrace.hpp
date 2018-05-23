@@ -143,13 +143,14 @@ public:
 private:
 	void invalidate_annotation_cache(RowInfo *row_info);
 
-	void cache_annotation(RowInfo *row_info, qreal abs_start, qreal abs_end,
-		QColor color, bool block_class_uniform, Annotation *ann = nullptr);
+	void cache_annotation(vector<CachedAnnotation> &ann_cache, qreal abs_start,
+		qreal abs_end, QColor color, bool block_class_uniform, Annotation *ann = nullptr);
 
 	bool annotation_cache_needs_update(RowInfo *row_info, int segment,
 		pair<uint64_t, uint64_t> sample_range);
 
 	void build_annotation_cache(RowInfo *row_info,
+		pair<uint64_t, uint64_t> sample_range,
 		vector<Annotation> annotations, QPainter &p);
 
 	void draw_annotations(RowInfo *row_info, QPainter &p,
