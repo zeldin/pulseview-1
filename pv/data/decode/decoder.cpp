@@ -172,6 +172,26 @@ void Decoder::invalidate_decoder_inst()
 	decoder_inst_ = nullptr;
 }
 
+bool Decoder::has_logic_output() const
+{
+	return (decoder_->logic_output_channels != nullptr);
+}
+
+const vector<DecoderLogicOutputChannel> Decoder::logic_output_channels() const
+{
+	vector<DecoderLogicOutputChannel> result;
+
+	for (GSList *l = decoder_->logic_output_channels; l; l = l->next) {
+		const srd_decoder_logic_output_channel* ch_data =
+			(srd_decoder_logic_output_channel*)l->data;
+
+		result.emplace_back(QString::fromUtf8(ch_data->id),
+			QString::fromUtf8(ch_data->desc), ch_data->samplerate);
+	}
+
+	return result;
+}
+
 }  // namespace decode
 }  // namespace data
 }  // namespace pv

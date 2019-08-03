@@ -111,6 +111,8 @@ public:
 	void assign_signal(const uint16_t channel_id, const SignalBase *signal);
 	int get_assigned_signal_count() const;
 
+	void update_output_signals();
+
 	void set_initial_pin_state(const uint16_t channel_id, const int init_state);
 
 	double samplerate() const;
@@ -188,6 +190,7 @@ private:
 	void create_decode_segment();
 
 	static void annotation_callback(srd_proto_data *pdata, void *decode_signal);
+	static void logic_output_callback(srd_proto_data *pdata, void *decode_signal);
 
 Q_SIGNALS:
 	void new_annotations(); // TODO Supply segment for which they belong to
@@ -228,6 +231,9 @@ private:
 	bool decode_paused_;
 
 	QString error_message_;
+
+	map<const srd_decoder*, shared_ptr<Logic>> output_logic_;
+	vector< shared_ptr<SignalBase>> output_signals_;
 };
 
 } // namespace data

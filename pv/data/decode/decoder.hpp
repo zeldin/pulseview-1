@@ -46,6 +46,13 @@ class SignalBase;
 
 namespace decode {
 
+struct DecoderLogicOutputChannel {
+	DecoderLogicOutputChannel (QString id, QString desc, uint64_t sr) :
+		id(id), desc(desc), samplerate(sr) {};
+	QString id, desc;
+	uint64_t samplerate;
+};
+
 class Decoder
 {
 public:
@@ -71,6 +78,9 @@ public:
 
 	srd_decoder_inst* create_decoder_inst(srd_session *session);
 	void invalidate_decoder_inst();
+
+	bool has_logic_output() const;
+	const vector<DecoderLogicOutputChannel> logic_output_channels() const;
 
 private:
 	const srd_decoder *const decoder_;
