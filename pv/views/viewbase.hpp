@@ -79,7 +79,7 @@ public:
 	/**
 	 * Returns the signal bases contained in this view.
 	 */
-	unordered_set< shared_ptr<data::SignalBase> > signalbases() const;
+	vector< shared_ptr<data::SignalBase> > signalbases() const;
 
 	virtual void clear_signalbases();
 
@@ -120,7 +120,7 @@ protected:
 
 	util::TimeUnit time_unit_;
 
-	unordered_set< shared_ptr<data::SignalBase> > signalbases_;
+	vector< shared_ptr<data::SignalBase> > signalbases_;
 
 	/// The ID of the currently displayed segment
 	uint32_t current_segment_;

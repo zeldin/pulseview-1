@@ -45,7 +45,6 @@ using std::mutex;
 using std::pair;
 using std::shared_ptr;
 using std::string;
-using std::unordered_set;
 using std::vector;
 
 using Glib::VariantBase;
@@ -93,7 +92,7 @@ const QString& StoreSession::error() const
 
 bool StoreSession::start()
 {
-	const unordered_set< shared_ptr<data::SignalBase> > sigs(session_.signalbases());
+	const vector< shared_ptr<data::SignalBase> > sigs(session_.signalbases());
 
 	shared_ptr<data::Segment> any_segment;
 	shared_ptr<data::LogicSegment> lsegment;

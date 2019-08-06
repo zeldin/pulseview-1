@@ -83,7 +83,6 @@ using std::string;
 using std::unique_lock;
 #endif
 using std::unique_ptr;
-using std::unordered_set;
 using std::vector;
 
 using sigrok::Analog;
@@ -673,7 +672,7 @@ void Session::register_view(shared_ptr<views::ViewBase> view)
 	update_signals();
 
 	// Add all other signals
-	unordered_set< shared_ptr<data::SignalBase> > view_signalbases =
+	vector< shared_ptr<data::SignalBase> > view_signalbases =
 		view->signalbases();
 
 	views::trace::View *trace_view =
@@ -769,14 +768,14 @@ vector<util::Timestamp> Session::get_triggers(uint32_t segment_id) const
 	return result;
 }
 
-const unordered_set< shared_ptr<data::SignalBase> > Session::signalbases() const
+const vector< shared_ptr<data::SignalBase> > Session::signalbases() const
 {
 	return signalbases_;
 }
 
 void Session::add_generated_signal(shared_ptr<data::SignalBase> signal)
 {
-	signalbases_.insert(signal);
+	signalbases_.push_back(signal);
 
 	for (shared_ptr<views::ViewBase>& view : views_)
 		view->add_signalbase(signal);
@@ -786,7 +785,8 @@ void Session::add_generated_signal(shared_ptr<data::SignalBase> signal)
 
 void Session::remove_generated_signal(shared_ptr<data::SignalBase> signal)
 {
-	signalbases_.erase(signal);
+	remove_if(signalbases_.begin(), signalbases_.end(),
+		[&](shared_ptr<data::SignalBase> b) { return signal == b; });
 
 	for (shared_ptr<views::ViewBase>& view : views_)
 		view->remove_signalbase(signal);
@@ -814,7 +814,7 @@ shared_ptr<data::DecodeSignal> Session::add_decode_signal()
 		// Create the decode signal
 		signal = make_shared<data::DecodeSignal>(*this);
 
-		signalbases_.insert(signal);
+		signalbases_.push_back(signal);
 
 		// Add the decode signal to all views
 		for (shared_ptr<views::ViewBase>& view : views_)
@@ -831,7 +831,8 @@ shared_ptr<data::DecodeSignal> Session::add_decode_signal()
 
 void Session::remove_decode_signal(shared_ptr<data::DecodeSignal> signal)
 {
-	signalbases_.erase(signal);
+	remove_if(signalbases_.begin(), signalbases_.end(),
+		[&](shared_ptr<data::SignalBase> b) { return signal == b; });
 
 	for (shared_ptr<views::ViewBase>& view : views_)
 		view->remove_decode_signal(signal);
@@ -914,8 +915,7 @@ void Session::update_signals()
 			qobject_cast<views::trace::View*>(viewbase.get());
 
 		if (trace_view) {
-			unordered_set< shared_ptr<views::trace::Signal> >
-				prev_sigs(trace_view->signals());
+			vector< shared_ptr<views::trace::Signal>> prev_sigs(trace_view->signals());
 			trace_view->clear_signals();
 
 			// Process all device signals
@@ -945,7 +945,7 @@ void Session::update_signals()
 						if (!signalbase) {
 							signalbase = make_shared<data::SignalBase>(channel,
 								data::SignalBase::LogicChannel);
-							signalbases_.insert(signalbase);
+							signalbases_.push_back(signalbase);
 
 							all_signal_data_.insert(logic_data_);
 							signalbase->set_data(logic_data_);
@@ -965,7 +965,7 @@ void Session::update_signals()
 						if (!signalbase) {
 							signalbase = make_shared<data::SignalBase>(channel,
 								data::SignalBase::AnalogChannel);
-							signalbases_.insert(signalbase);
+							signalbases_.push_back(signalbase);
 
 							shared_ptr<data::Analog> data(new data::Analog());
 							all_signal_data_.insert(data);
@@ -994,6 +994,8 @@ void Session::update_signals()
 				// Ignore channels that are associated with a sigrok device
 				if (b->channel() != nullptr)
 					continue;
+
+				// TODO Don't add signals that have already been added
 
 				if (b->type() == data::SignalBase::LogicChannel) {
 					shared_ptr<views::trace::Signal> signal = shared_ptr<views::trace::Signal>(

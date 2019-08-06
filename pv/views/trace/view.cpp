@@ -270,7 +270,7 @@ const Session& View::session() const
 	return session_;
 }
 
-unordered_set< shared_ptr<Signal> > View::signals() const
+vector< shared_ptr<Signal> > View::signals() const
 {
 	return signals_;
 }
@@ -284,7 +284,7 @@ void View::clear_signals()
 void View::add_signal(const shared_ptr<Signal> signal)
 {
 	ViewBase::add_signalbase(signal->base());
-	signals_.insert(signal);
+	signals_.push_back(signal);
 
 	signal->set_segment_display_mode(segment_display_mode_);
 	signal->set_current_segment(current_segment_);

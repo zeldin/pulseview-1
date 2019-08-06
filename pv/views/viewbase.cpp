@@ -75,7 +75,7 @@ void ViewBase::clear_signals()
 {
 }
 
-unordered_set< shared_ptr<data::SignalBase> > ViewBase::signalbases() const
+vector< shared_ptr<data::SignalBase> > ViewBase::signalbases() const
 {
 	return signalbases_;
 }
@@ -94,7 +94,7 @@ void ViewBase::clear_signalbases()
 
 void ViewBase::add_signalbase(const shared_ptr<data::SignalBase> signalbase)
 {
-	signalbases_.insert(signalbase);
+	signalbases_.push_back(signalbase);
 
 	connect(signalbase.get(), SIGNAL(samples_cleared()),
 		this, SLOT(on_data_updated()));
@@ -109,7 +109,8 @@ void ViewBase::remove_signalbase(const shared_ptr<data::SignalBase> signalbase)
 	disconnect(signalbase.get(), SIGNAL(samples_added(uint64_t, uint64_t, uint64_t)),
 		this, SLOT(on_samples_added(uint64_t, uint64_t, uint64_t)));
 
-	signalbases_.erase(signalbase);
+	remove_if(signalbases_.begin(), signalbases_.end(),
+		[&](shared_ptr<data::SignalBase> b) { return signalbase == b; });
 }
 
 #ifdef ENABLE_DECODE

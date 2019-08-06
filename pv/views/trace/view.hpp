@@ -115,7 +115,7 @@ public:
 	/**
 	 * Returns the signals contained in this view.
 	 */
-	unordered_set< shared_ptr<Signal> > signals() const;
+	vector< shared_ptr<Signal> > signals() const;
 
 	virtual void clear_signals();
 
@@ -506,7 +506,7 @@ private:
 	Header *header_;
 	QSplitter *splitter_;
 
-	unordered_set< shared_ptr<Signal> > signals_;
+	vector< shared_ptr<Signal> > signals_;
 
 #ifdef ENABLE_DECODE
 	vector< shared_ptr<DecodeTrace> > decode_traces_;

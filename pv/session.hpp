@@ -56,7 +56,6 @@ using std::mutex;
 using std::recursive_mutex;
 using std::shared_ptr;
 using std::string;
-using std::unordered_set;
 
 #ifdef ENABLE_FLOW
 using Glib::RefPtr;
@@ -198,7 +197,7 @@ public:
 
 	bool has_view(shared_ptr<views::ViewBase> view);
 
-	const unordered_set< shared_ptr<data::SignalBase> > signalbases() const;
+	const vector< shared_ptr<data::SignalBase> > signalbases() const;
 	void add_generated_signal(shared_ptr<data::SignalBase> signal);
 	void remove_generated_signal(shared_ptr<data::SignalBase> signal);
 
@@ -289,7 +288,7 @@ private:
 	mutable mutex sampling_mutex_; //!< Protects access to capture_state_.
 	capture_state capture_state_;
 
-	unordered_set< shared_ptr<data::SignalBase> > signalbases_;
+	vector< shared_ptr<data::SignalBase> > signalbases_;
 	unordered_set< shared_ptr<data::SignalData> > all_signal_data_;
 
 	/// trigger_list_ contains pairs of <segment_id, timestamp> values.
